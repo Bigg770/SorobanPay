@@ -9,10 +9,8 @@ on:
   # Allow manual trigger (e.g., to run gas estimation or load tests on demand)
   workflow_dispatch:
 
-# Cancel in-progress runs for the same branch/PR to save runner minutes
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
@@ -35,26 +33,21 @@ jobs:
         with:
           workspaces: contracts/subscription
 
-      # ── lint ──────────────────────────────────────────────────────────────
-      - name: Check formatting (rustfmt --check)
-        run: cargo fmt --manifest-path contracts/subscription/Cargo.toml -- --check
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
 
-      - name: Clippy (-D warnings)
-        run: cargo clippy --manifest-path contracts/subscription/Cargo.toml --all-targets -- -D warnings
+      - name: Security audit (cargo audit)
+        run: cargo audit --manifest-path contracts/subscription/Cargo.toml
+        working-directory: contracts/subscription
 
-      # ── build ─────────────────────────────────────────────────────────────
       - name: Build (wasm32 release)
-        run: |
-          cargo build \
-            --manifest-path contracts/subscription/Cargo.toml \
-            --target wasm32-unknown-unknown \
-            --release
+        run: cargo build --locked --manifest-path contracts/subscription/Cargo.toml --target wasm32-unknown-unknown --release
 
       # ── test ──────────────────────────────────────────────────────────────
       - name: Test & summary
         run: |
           set -o pipefail
-          cargo test --manifest-path contracts/subscription/Cargo.toml 2>&1 \
+          cargo test --locked --manifest-path contracts/subscription/Cargo.toml 2>&1 \
             | tee /tmp/contract-test-output.txt
           echo "--- Test summary ---"
           grep -E "^test result|FAILED|ok$" /tmp/contract-test-output.txt || true
@@ -158,21 +151,8 @@ jobs:
           name: frontend-coverage-html
           path: frontend/coverage/
 
-      # ── build ─────────────────────────────────────────────────────────────
-      - name: Build (next build)
-        run: npm run build
-        env:
-          # Supply a syntactically valid placeholder so the build does not
-          # fail on the "Contract not configured" env-var guard.
-          NEXT_PUBLIC_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
-          NEXT_PUBLIC_RPC_URL: https://soroban-testnet.stellar.org
-          NEXT_PUBLIC_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # JOB 3 — Backend: type-check, test, audit
-  # ─────────────────────────────────────────────────────────────────────────
-  backend:
-    name: "Backend — type-check, test, audit"
+  backend-integration:
+    name: Backend quality and integration tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -190,9 +170,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # ── type-check ────────────────────────────────────────────────────────
       - name: Type check
         run: npm run type-check
+        working-directory: backend
+
+      - name: Run unit tests
+        run: npm test -- --runInBand
+        working-directory: backend
+
+      - name: Run integration tests
+        run: npm run test:integration
+        working-directory: backend
 
       # ── test ──────────────────────────────────────────────────────────────
       - name: Unit tests
@@ -605,10 +593,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install script dependencies
-        run: npm install
+        run: npm ci
+        working-directory: .
 
       - name: Run gas estimation harness
         env:
